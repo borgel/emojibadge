@@ -14,6 +14,8 @@
   
   GSM board: https://learn.adafruit.com/adafruit-fona-mini-gsm-gprs-cellular-phone-module/pinouts
   
+  (650) 210-6925 
+  
  ****************************************************/
 
 #include <Wire.h>
@@ -21,6 +23,9 @@
 #include <Adafruit_GFX.h>
 
 Adafruit_8x8matrix matrix = Adafruit_8x8matrix();
+
+#define MATRIX_MAX_H  8
+#define MATRIX_MAX_W  8
 
 //for led toggling
 int led_toggle_state = LOW;
@@ -45,10 +50,18 @@ const int GSM_RI =    15;
 
 void setup() {
   CONSOLE_UART.begin(115200);
-  CONSOLE_UART.println("badgey is alive");
   
   matrix.begin(0x70);  // pass in the address
   matrix.clear();
+  
+  delay(50);
+  
+  //setup matrix
+  matrix.setTextSize(1);
+  matrix.setTextWrap(false);  // we dont want text to wrap so it scrolls nicely
+  matrix.setTextColor(LED_ON);
+  
+  CONSOLE_UART.println("badgey is alive");
   
   //GPIO
   pinMode(LED_BUILTIN, OUTPUT);
@@ -65,6 +78,8 @@ void setup() {
   //pull key pin low
   digitalWrite(GSM_KEY, LOW);
   
+  delay(1000);
+  
   //wait until the power indicator goes low (~2 seconds)
   while(digitalRead(GSM_PS) == LOW) {
     //ms
@@ -73,6 +88,7 @@ void setup() {
     TOGGLE_LED_STATE;
     digitalWrite(LED_BUILTIN, led_toggle_state);
   }
+  
   // stop keying the radio
   digitalWrite(GSM_KEY, HIGH);
   
@@ -85,9 +101,23 @@ void setup() {
   
   delay(100);
   
+  CONSOLE_UART.println("asdasd");
+  
+  /*
+#define CTRL_Z 26
+  char buffer1[100];
+sprintf (buffer1, "This is my message%c", CTRL_Z);
+  GSM_UART.println(buffer1);
+  CONSOLE_UART.println(GSM_UART.readString());
+  */
+  
+  
+  
+  
+  
   String resp = gsm_command("AT");
   CONSOLE_UART.println("response was [" + resp + "]");
-  if(resp == GSM_STR_AT_OK) {
+  if(resp.startsWith("AT\nOK")) {
     CONSOLE_UART.println("GSM radio initialized\n");
   }
   
@@ -95,10 +125,114 @@ void setup() {
   gsm_command("ATE0");
   
   CONSOLE_UART.println(gsm_command("ATI"));
-  delay(200);
-  CONSOLE_UART.println(gsm_command("AT+CBC"));
+  delay(100);
+  
+  
+  //TODO ask radio to signal on RI when get SMS (AT+CFGRI=1)
+  CONSOLE_UART.println(gsm_command("AT+CFGRI=1"));
+  
+  //setup ISR to be called on SMS/ring
+  //pin?, isr, mode
+  attachInterrupt(GSM_RI, isrRing, FALLING);
+  
+  //put radio in sms (ascii? text?) mode
+  CONSOLE_UART.println(gsm_command("AT+CMGF=1"));
+  
+  //set message storage for SMS to modem memory (not sim) for read, send, receive
+  CONSOLE_UART.println(gsm_command("AT+CPMS=\"MT\",\"ME\",\"ME\""));
+  
+  
+  //print assorted GSM status info
+  
+  long bvolt = get_gsm_battery_percent();
+  CONSOLE_UART.print("bat volt percent: ");
+  CONSOLE_UART.println(bvolt);
+  
+  //status info
+  //carrier name
+  CONSOLE_UART.println(gsm_command("AT+COPS?"));
+  //print sig strength (9, 10, 11, etc at desk). dont know scale
+  CONSOLE_UART.println(gsm_command("AT+CSQ"));
+  
+  delay(100);
+  CONSOLE_UART.println("Setup Done");
 
+  //put somethoing ont he matrix
+  matrix.clear();
+  matrix.setCursor(-1,0);
+  matrix.print(":");
+  matrix.setCursor(3,0);
+  matrix.print(")");
+  matrix.writeDisplay();
+
+  //TODO get last SMS on device and set display to it
 }
+
+
+
+// number of times the ISR for a ring has fired which are unserviced
+volatile int rings = 0;
+
+void loop() {
+  
+  /*
+    matrix.clear();
+    matrix.setCursor(-1,0);
+    matrix.print(":");
+    matrix.setCursor(3,0);
+    matrix.print(")");
+    matrix.writeDisplay();
+    */
+
+    delay(100);
+    
+    TOGGLE_LED_STATE;
+    digitalWrite(LED_BUILTIN, led_toggle_state);
+    
+    //TODO get signal strength and display it as a line on MATRIX_MAX_H?
+    
+    //looks like this works
+    if(rings > 0) {
+      CONSOLE_UART.println("got a ring");
+      
+      //print all sms
+      CONSOLE_UART.println(gsm_command("AT+CMGL=\"ALL\""));
+      
+      //TODO get total SMS
+      //get next SMS
+      //if total > 1, delete the one we got (else leave one in the device for next boot)
+      
+      rings--;
+    }
+    
+    delay(1000);
+}
+
+/*
+  interrupt for tracking radio state
+  
+  RI is pulled high and goes low for 120ms to indicate ring/SMS
+  looks like this works
+*/
+void isrRing() {
+  rings++;
+}
+
+
+/*
+  functions for dealing with SMSs
+ */
+int totalSMS(){
+}
+
+void deleteSMS(){
+}
+
+void getSMSContent(){
+}
+
+
+
 
 /*
   Send a command to the GSM radio and return a String of the response
@@ -110,7 +244,6 @@ String gsm_command(String com) {
 }
 
 /*
-  TODO
   query the GSM breakout for the charge of the battery (in %)
   returns: integer percentage from 100 to 0
 */
@@ -123,26 +256,29 @@ int get_gsm_battery_percent(){
 
   OK
   */
-  //split on commas. take int between 1st and 2nd
-  return 0;
+  CONSOLE_UART.println("full bat string: [" + bat + "]");
+  //find for '0,'
+  bat = bat.substring(bat.indexOf(",") + 1, bat.lastIndexOf(","));
+  CONSOLE_UART.println("bat voltage str = [" + bat + "]");
+  
+  //get the int that's there
+  return bat.toInt();
 }
 
-void loop() {
-  matrix.setTextSize(1);
-  matrix.setTextWrap(false);  // we dont want text to wrap so it scrolls nicely
-  matrix.setTextColor(LED_ON);
-  
-    matrix.clear();
-    matrix.setCursor(-1,1);
-    matrix.print(":");
-    matrix.setCursor(3,1);
-    matrix.print(")");
-    matrix.writeDisplay();
+void sendSMS(int number, String text) {  
+  /*
+  CONSOLE_UART.println("send sms:" + gsm_command("AT+CMGS=\"14087611826\""));
 
-    delay(100);
-    
-    TOGGLE_LED_STATE;
-    digitalWrite(LED_BUILTIN, led_toggle_state);
+#define CTRL_Z 26
+  char buffer[100];
+sprintf (buffer, "This is my message%c", CTRL_Z);
+
+  GSM_UART.println(buffer);
+  CONSOLE_UART.println(GSM_UART.readString());
+  CONSOLE_UART.println(GSM_UART.readString());
+  */
+}
+
   
   /*
   for (int8_t x=0; x>=-36; x--) {
@@ -164,4 +300,3 @@ void loop() {
   }
   matrix.setRotation(0);
   */
-}
