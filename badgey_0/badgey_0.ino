@@ -22,44 +22,36 @@
 #include <Adafruit_LEDBackpack.h>
 #include <Adafruit_GFX.h>
 
-Adafruit_8x8matrix matrix = Adafruit_8x8matrix();
+#include "SMS.h"
+#include "badgey.h"
 
-#define MATRIX_MAX_H  8
-#define MATRIX_MAX_W  8
+
+Adafruit_8x8matrix g_matrix = Adafruit_8x8matrix();
+
+#define TIME_BETWEEN_WAKE_MS    60000
 
 //for led toggling
 int led_toggle_state = LOW;
 #define TOGGLE_LED_STATE (led_toggle_state = (led_toggle_state == LOW) ? HIGH : LOW)
+    
 
-/* important defines */
-//key (to power cycle radio)
-const int GSM_KEY =   17;
-const int GSM_PS =    16;
-const int GSM_RI =    15;
+#define GSM_STR_AT_OK "AT\nOK\n"
 
-//the rx pin on the GSM breakout. so our tx
-//uses UART 2
-//const int GSM_RX =    10; //TX2
-//const int GSM_TX =    9; //RX2
-#define GSM_UART      Serial2
-
-#define GSM_STR_AT_OK    "AT\nOK\n"
-
-#define CONSOLE_UART  Serial
-
+//the timestamp in millis when setup finished
+unsigned long endOfSetupTimeMs;
 
 void setup() {
   CONSOLE_UART.begin(115200);
   
-  matrix.begin(0x70);  // pass in the address
-  matrix.clear();
+  g_matrix.begin(0x70);  // pass in the address
+  g_matrix.clear();
   
   delay(50);
   
   //setup matrix
-  matrix.setTextSize(1);
-  matrix.setTextWrap(false);  // we dont want text to wrap so it scrolls nicely
-  matrix.setTextColor(LED_ON);
+  g_matrix.setTextSize(1);
+  g_matrix.setTextWrap(false);  // we dont want text to wrap so it scrolls nicely
+  g_matrix.setTextColor(LED_ON);
   
   CONSOLE_UART.println("badgey is alive");
   
@@ -101,8 +93,6 @@ void setup() {
   
   delay(100);
   
-  CONSOLE_UART.println("asdasd");
-  
   /*
 #define CTRL_Z 26
   char buffer1[100];
@@ -117,7 +107,7 @@ sprintf (buffer1, "This is my message%c", CTRL_Z);
   
   String resp = gsm_command("AT");
   CONSOLE_UART.println("response was [" + resp + "]");
-  if(resp.startsWith("AT\nOK")) {
+  if(resp.startsWith("\r\nOK")) {
     CONSOLE_UART.println("GSM radio initialized\n");
   }
   
@@ -131,16 +121,11 @@ sprintf (buffer1, "This is my message%c", CTRL_Z);
   //TODO ask radio to signal on RI when get SMS (AT+CFGRI=1)
   CONSOLE_UART.println(gsm_command("AT+CFGRI=1"));
   
-  //setup ISR to be called on SMS/ring
-  //pin?, isr, mode
-  attachInterrupt(GSM_RI, isrRing, FALLING);
-  
   //put radio in sms (ascii? text?) mode
   CONSOLE_UART.println(gsm_command("AT+CMGF=1"));
   
   //set message storage for SMS to modem memory (not sim) for read, send, receive
-  CONSOLE_UART.println(gsm_command("AT+CPMS=\"MT\",\"ME\",\"ME\""));
-  
+  CONSOLE_UART.println(gsm_command("AT+CPMS=\"ME\",\"ME\",\"ME\""));
   
   //print assorted GSM status info
   
@@ -158,54 +143,67 @@ sprintf (buffer1, "This is my message%c", CTRL_Z);
   CONSOLE_UART.println("Setup Done");
 
   //put somethoing ont he matrix
-  matrix.clear();
-  matrix.setCursor(-1,0);
-  matrix.print(":");
-  matrix.setCursor(3,0);
-  matrix.print(")");
-  matrix.writeDisplay();
-
-  //TODO get last SMS on device and set display to it
+  g_matrix.clear();
+  g_matrix.setTextSize(1);
+  g_matrix.setCursor(-1,0);
+  g_matrix.print("Hi");
+  g_matrix.writeDisplay();
+    
+  
+  CONSOLE_UART.println(gsm_command("AT+CMGL=\"ALL\""));
+  
+  endOfSetupTimeMs = millis();
+  
+  //setup ISR to be called on SMS/ring
+  attachInterrupt(GSM_RI, isrRing, FALLING);
 }
 
 
 
-// number of times the ISR for a ring has fired which are unserviced
-volatile int rings = 0;
+// number of times the device should wake and query for new SMS to display
+// wake atleast once on boot to display the last message we got
+volatile int rings = 1;
+
+unsigned long lastWakeTime = 0;
 
 void loop() {
-  
-  /*
-    matrix.clear();
-    matrix.setCursor(-1,0);
-    matrix.print(":");
-    matrix.setCursor(3,0);
-    matrix.print(")");
-    matrix.writeDisplay();
-    */
-
-    delay(100);
+    delay(1000);
     
     TOGGLE_LED_STATE;
     digitalWrite(LED_BUILTIN, led_toggle_state);
     
-    //TODO get signal strength and display it as a line on MATRIX_MAX_H?
+    //TODO get signal strength and display it as a line at MATRIX_MAX_H?
     
-    //looks like this works
+    //wake every 30 seconds to display a new SMS if there is one
+    if(millis() - lastWakeTime > TIME_BETWEEN_WAKE_MS) {
+      rings++;
+      
+      lastWakeTime = millis() - 1;
+      
+    }
+    
+    CONSOLE_UART.println("lastWake = " + String(lastWakeTime) + " millis = " + String(millis()));
+    
+    //wake up every time we get an alert. often there will be no new SMS to display, but this will refresh it anyway
     if(rings > 0) {
       CONSOLE_UART.println("got a ring");
       
-      //print all sms
-      CONSOLE_UART.println(gsm_command("AT+CMGL=\"ALL\""));
+      // consume UART msg that we got a ring (if we did) a single GSM read will do to drain it
+      GSM_UART.readString();
       
-      //TODO get total SMS
-      //get next SMS
-      //if total > 1, delete the one we got (else leave one in the device for next boot)
+      SMS_t msg = {0};
+      getNextSMS(&msg);
+      displayEmoticon(g_matrix, msg.text);
       
+      //track that we handled an incoming SMS
       rings--;
+      
+      //wait TIME_BETWEEN_WAKE_MS before displaying a new emoji
+      lastWakeTime = millis() - 1;
+      
+      //reattach the interrupt
+      attachInterrupt(GSM_RI, isrRing, FALLING);
     }
-    
-    delay(1000);
 }
 
 /*
@@ -216,23 +214,37 @@ void loop() {
 */
 void isrRing() {
   rings++;
+  
+  //disable this interrupt until we service the module
+  detachInterrupt(GSM_RI);
 }
-
 
 /*
-  functions for dealing with SMSs
+ display the emoticon in the passed string on the matrix
+ 
+ expects emoticons to be 3 chars
  */
-int totalSMS(){
+void displayEmoticon(Adafruit_8x8matrix matrix, String text){
+  matrix.clear();
+  
+  int len = text.length();
+  /*
+  if(len == 1) {
+  }
+  else if
+  */
+  
+  matrix.setCursor(-1,0);
+  matrix.print(text[0]);
+  
+  matrix.setCursor(1,0);
+  matrix.print(text[1]);
+  
+  matrix.setCursor(3,0);
+  matrix.print(text[2]);
+  
+  matrix.writeDisplay();
 }
-
-void deleteSMS(){
-}
-
-void getSMSContent(){
-}
-
-
-
 
 /*
   Send a command to the GSM radio and return a String of the response
@@ -265,19 +277,6 @@ int get_gsm_battery_percent(){
   return bat.toInt();
 }
 
-void sendSMS(int number, String text) {  
-  /*
-  CONSOLE_UART.println("send sms:" + gsm_command("AT+CMGS=\"14087611826\""));
-
-#define CTRL_Z 26
-  char buffer[100];
-sprintf (buffer, "This is my message%c", CTRL_Z);
-
-  GSM_UART.println(buffer);
-  CONSOLE_UART.println(GSM_UART.readString());
-  CONSOLE_UART.println(GSM_UART.readString());
-  */
-}
 
   
   /*
