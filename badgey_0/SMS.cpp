@@ -109,6 +109,8 @@ void getFirstSMS(SMS_t *msg) {
 void getNextSMS(SMS_t *msg){
   int total = totalSMS();
   
+  static String lastIndex = "";
+  
   CONSOLE_UART.println("total = " + String(total));
   
   //FIXME remove hard code. figure out how to do this
@@ -116,9 +118,15 @@ void getNextSMS(SMS_t *msg){
   
   // delete the message we just got if there are more then 1 remaining
   if(total > 1) {
-    CONSOLE_UART.println("was more then 1 message. deleting the one we got [" + String(msg->msgIndex) + "]");
-    CONSOLE_UART.println(deleteSMS(msg->msgIndex));
+    CONSOLE_UART.println("was more then 1 message. deleting lastIndex = [" + String(msg->msgIndex) + "]");
+    
+    //if the message we just got is DIFFERENT from lastIndex, then dont delete it! delete lastIndex instead
+    //actually, always delete lastIndex...
+    CONSOLE_UART.println(deleteSMS(lastIndex));
+  
   }
+  
+  lastIndex = msg->msgIndex;
 }
 
 

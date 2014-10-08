@@ -28,7 +28,7 @@
 
 Adafruit_8x8matrix g_matrix = Adafruit_8x8matrix();
 
-#define TIME_BETWEEN_WAKE_MS    60000
+#define TIME_BETWEEN_WAKE_MS    30000
 
 //for led toggling
 int led_toggle_state = LOW;
